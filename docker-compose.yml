@@ -1,0 +1,162 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: transportepro-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${APP_TIMEZONE:-America/Sao_Paulo}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      - ./infra/postgres/002_operational_domain.sql:/docker-entrypoint-initdb.d/002_operational_domain.sql:ro
+      - ./infra/postgres/003_platform_expansion.sql:/docker-entrypoint-initdb.d/003_platform_expansion.sql:ro
+      - ./infra/postgres/004_align_ride_categories_core_node.sql:/docker-entrypoint-initdb.d/004_align_ride_categories_core_node.sql:ro
+      - ./infra/postgres/005_remaining_domains.sql:/docker-entrypoint-initdb.d/005_remaining_domains.sql:ro
+      - ./infra/postgres/006_seed_catalog.sql:/docker-entrypoint-initdb.d/006_seed_catalog.sql:ro
+      - ./infra/postgres/007_auth_rides_geocoding.sql:/docker-entrypoint-initdb.d/007_auth_rides_geocoding.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_internal
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: transportepro-redis
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - redis-server --appendonly yes --save 60 1000 --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      TZ: ${APP_TIMEZONE:-America/Sao_Paulo}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend_internal
+
+  geo-go:
+    build:
+      context: ./services/geo-go
+      dockerfile: Dockerfile
+    container_name: transportepro-geo-go
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      HTTP_PORT: ${GO_PORT:-8080}
+      PG_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      INTERNAL_SHARED_TOKEN: ${INTERNAL_SHARED_TOKEN}
+      TZ: ${APP_TIMEZONE:-America/Sao_Paulo}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "${GO_PORT:-8080}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend_internal
+
+  core-node:
+    build:
+      context: ./services/core-node
+      dockerfile: Dockerfile
+    container_name: transportepro-core-node
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      HTTP_PORT: ${NODE_PORT:-3000}
+      PG_DSN: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      INTERNAL_SHARED_TOKEN: ${INTERNAL_SHARED_TOKEN}
+      GEO_GO_URL: http://geo-go:${GO_PORT:-8080}
+      RIDE_START_SECRET: ${RIDE_START_SECRET:-dev-ride-start-secret-change-me}
+      MAPBOX_ACCESS_TOKEN: ${MAPBOX_ACCESS_TOKEN:-}
+      TZ: ${APP_TIMEZONE:-America/Sao_Paulo}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      geo-go:
+        condition: service_healthy
+    expose:
+      - "${NODE_PORT:-3000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend_internal
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: transportepro-nginx
+    restart: unless-stopped
+    depends_on:
+      geo-go:
+        condition: service_healthy
+      core-node:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - public_edge
+      - backend_internal
+
+networks:
+  public_edge:
+    driver: bridge
+  backend_internal:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:

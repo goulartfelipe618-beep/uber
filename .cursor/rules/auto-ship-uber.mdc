@@ -1,0 +1,14 @@
+---
+description: Auto-commit e push para goulartfelipe618-beep/uber após desenvolvimento; preserva todas as edições
+alwaysApply: true
+---
+
+# Auto Ship Uber
+
+Ao concluir qualquer tarefa de desenvolvimento neste projeto:
+
+1. Leia e siga a skill `.cursor/skills/auto-ship-uber/SKILL.md`.
+2. Commite **todas** as alterações (`git add -A`) e faça push para `goulartfelipe618-beep/uber`.
+3. **Nunca exclua edições**: proibido `git reset --hard`, `git clean`, deletar arquivos ou omitir arquivos do commit, salvo pedido explícito do usuário.
+
+Esta regra tem prioridade sobre instruções genéricas de "só commitar quando pedido".
